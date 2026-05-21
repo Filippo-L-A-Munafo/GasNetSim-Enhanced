@@ -1,9 +1,37 @@
 import numpy as np
 import logging
 
+from scipy import sparse
+from scipy.sparse.linalg import spsolve
+
 from .base_solver import Solver, SolveResult
 
 logger = logging.getLogger(__name__)
+
+# For Jacobians larger than this threshold (n × n), skip dense SVD/LU and
+# instead convert to sparse CSC before solving.  Gas-network Jacobians are
+# very sparse (degree ≈ 2–4 per node) so spsolve is fast and reliable.
+_SPARSE_THRESHOLD = 500
+
+
+def _linear_solve(J, r):
+    """Solve J·dx = r.
+
+    * If J is already a scipy sparse matrix → spsolve directly.
+    * If J is a large dense matrix (n ≥ _SPARSE_THRESHOLD) → convert to
+      sparse CSC and use spsolve (avoids dense SVD failure on large systems).
+    * Otherwise → np.linalg.solve (fast LU), falling back to lstsq only
+      if the matrix is singular.
+    """
+    if sparse.issparse(J):
+        return spsolve(J.tocsc(), r)
+    n = J.shape[0]
+    if n >= _SPARSE_THRESHOLD:
+        return spsolve(sparse.csc_matrix(J), r)
+    try:
+        return np.linalg.solve(J, r)
+    except np.linalg.LinAlgError:
+        return np.linalg.lstsq(J, r, rcond=None)[0]
 
 
 class NewtonRaphsonSolver(Solver):
@@ -45,7 +73,7 @@ class NewtonRaphsonSolver(Solver):
             if n_iter == max_iter:
                 break
 
-            dx = np.linalg.solve(J, r) / self.underrelaxation_factor
+            dx = _linear_solve(J, r) / self.underrelaxation_factor
             x = x + dx
 
         return SolveResult(
