@@ -19,6 +19,12 @@ from GasNetSim.components.gas_mixture.gas_mixture import *
 STANDARD_TEMPERATURE = zero_Celsius + 15  # 15 degree Celsius in Kelvin
 STANDARD_PRESSURE = 1 * atm  # 1 atm in pa
 
+# Minimum |p1² - p2² - slope_corr| used when computing Jacobian derivatives.
+# Prevents (0)^(-0.5) = inf when two nodes share the same initial pressure
+# (which happens for short segments in resistance-weighted initialisation).
+# At 70 bar the equivalent pressure difference is ~7 nPa — physically negligible.
+_DELTA_P2_MIN = 1.0  # Pa²
+
 
 class Pipeline:
     """
@@ -383,7 +389,8 @@ class Pipeline:
         pipeline_coefficient = (
             self.calculate_coefficient_for_iteration() * self.conversion_factor
         )
-        tmp = (abs(p1**2 - p2**2 - slope_corr)) ** (-0.5)
+        delta = abs(p1**2 - p2**2 - slope_corr)
+        tmp = max(delta, _DELTA_P2_MIN) ** (-0.5)
         dsc_dp = self.calc_slope_correction_pressure_derivative(is_inlet)
 
         if is_inlet:
@@ -505,7 +512,7 @@ class Resistance:
         elif p1**2 - p2**2 - slope_correction < 0:
             return -1
         else:
-            raise ValueError("Got condition case 0.")
+            return 0
 
     def calc_flow_rate(self):
         """
@@ -526,7 +533,8 @@ class Resistance:
         p2 = self.outlet.pressure
         slope_corr = self.calc_pipe_slope_correction()
         pipeline_coefficient = self.calculate_coefficient_for_iteration()
-        tmp = (abs(p1**2 - p2**2 - slope_corr)) ** (-0.5)
+        delta = abs(p1**2 - p2**2 - slope_corr)
+        tmp = max(delta, _DELTA_P2_MIN) ** (-0.5)
 
         if is_inlet:
             return pipeline_coefficient * p1 * tmp
