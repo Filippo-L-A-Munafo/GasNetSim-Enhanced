@@ -19,6 +19,20 @@ _SPARSE_THRESHOLD = 500
 # have nearly equal inlet/outlet pressures).
 _REG_FACTOR = 1e-8
 
+# Maximum fractional pressure change allowed per Newton step (relative to the
+# initial pressure vector).  Caps explosive divergence in ill-conditioned
+# systems (e.g. large networks with near-flat initial pressure and high
+# demand imbalance) without preventing convergence once the iterate is near
+# the solution.  Value 0.3 → each junction pressure can change by at most
+# 30 % of its starting value per raw Newton step (before URF is applied).
+_MAX_STEP_FRAC = 0.3
+
+# Absolute minimum pressure (Pa) enforced after every Newton step.
+# Physical pressures are always positive; clamping prevents the Weymouth /
+# Panhandle equations from receiving negative absolute pressures, which would
+# make the squared-pressure terms behave erratically.
+_P_FLOOR_PA = 1.0
+
 
 def _linear_solve(J, r):
     """Solve J·dx = r.
@@ -85,6 +99,18 @@ class NewtonRaphsonSolver(Solver):
     def solve(self, residual_fn, jacobian_fn, x0, tol, max_iter):
         x = x0.copy()
 
+        # Per-component step cap: prevents explosive divergence in
+        # ill-conditioned systems.  The cap is fixed to the initial state so
+        # it stays meaningful even after x drifts far from x0.
+        _max_dp = np.abs(x0) * _MAX_STEP_FRAC
+        _max_dp = np.where(_max_dp < _P_FLOOR_PA, _P_FLOOR_PA, _max_dp)
+
+        # Track the best (lowest-residual) iterate so that the non-converged
+        # return value is the closest we ever got to the solution, not the
+        # final (possibly diverged) state.
+        best_err = float("inf")
+        best_x = x.copy()
+
         for n_iter in range(max_iter + 1):
             # Jacobian is evaluated first so the formulation can cache both
             # J and F from the single _compute(x) call, making residual_fn
@@ -94,6 +120,10 @@ class NewtonRaphsonSolver(Solver):
 
             err = float(np.max(np.abs(r)))
             logger.debug(f"Newton iteration {n_iter}: max|F| = {err:.3e}")
+
+            if err < best_err:
+                best_err = err
+                best_x = x.copy()
 
             if err <= tol:
                 return SolveResult(
@@ -107,10 +137,24 @@ class NewtonRaphsonSolver(Solver):
                 break
 
             dx = _linear_solve(J, r) / self.underrelaxation_factor
+
+            # Cap each component to ±_max_dp to prevent blow-up.
+            dx = np.clip(dx, -_max_dp, _max_dp)
+
             x = x + dx
 
+            # Enforce pressure positivity: gas absolute pressures cannot
+            # be negative.  Clamping keeps the Weymouth equations physical.
+            x = np.where(x < _P_FLOOR_PA, _P_FLOOR_PA, x)
+
+        logger.warning(
+            "Newton-Raphson did not converge in %d iteration(s). "
+            "Best residual: %.3e (at iter where best was stored). "
+            "Returning best iterate.",
+            max_iter, best_err,
+        )
         return SolveResult(
-            x=x,
+            x=best_x,
             converged=False,
             n_iter=max_iter,
             message=f"Did not converge in {max_iter} iteration(s)",
