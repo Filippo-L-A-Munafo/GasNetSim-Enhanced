@@ -47,12 +47,18 @@ class StaggeredStrategy(Strategy):
         coupling_tol=1e-4,
         outer_pressure_tol=None,
         composition_relaxation_factor=0.5,
+        aitken_acceleration=False,
     ):
         self.solver = solver
         self.coupling_max_iter = coupling_max_iter
         self.coupling_tol = coupling_tol
         self.outer_pressure_tol = outer_pressure_tol
+        # Fattore di rilassamento della composizione. Con aitken_acceleration
+        # è solo il valore INIZIALE: da lì Aitken (Irons–Tuck) lo adatta a ogni
+        # iterazione. Con aitken_acceleration=False resta fisso (comportamento
+        # classico).
         self.composition_relaxation_factor = composition_relaxation_factor
+        self.aitken_acceleration = aitken_acceleration
 
     def solve(
         self,
@@ -65,6 +71,7 @@ class StaggeredStrategy(Strategy):
         sparse_matrix,
         tracking_method,
         time_step,
+        warm_start=False,
     ):
         # no_mixing needs no composition coupling — delegate directly.
         if tracking_method == "no_mixing":
@@ -77,6 +84,7 @@ class StaggeredStrategy(Strategy):
                 sparse_matrix=sparse_matrix,
                 tracking_method=tracking_method,
                 time_step=time_step,
+                warm_start=warm_start,
             )
 
         if self.coupling_max_iter < 1:
@@ -94,6 +102,7 @@ class StaggeredStrategy(Strategy):
             use_cuda=use_cuda,
             sparse_matrix=sparse_matrix,
             time_step=time_step,
+            warm_start=warm_start,
         )
 
         # Save and restore network initialisation flags across outer iters.
@@ -105,6 +114,10 @@ class StaggeredStrategy(Strategy):
 
         previous_pressure = None
 
+        # Stato per l'accelerazione di Aitken (Irons–Tuck) sulla composizione.
+        aitken_prev_r = None
+        aitken_omega = float(self.composition_relaxation_factor)
+
         try:
             for outer_iter in range(1, self.coupling_max_iter + 1):
                 if outer_iter > 1:
@@ -112,10 +125,21 @@ class StaggeredStrategy(Strategy):
                     network.pressure_prev = network.save_pressure_values()
 
                 # --- Pressure step (composition frozen) ---
+                # run_composition_initialization only gates
+                # network.composition_initialization().  It does NOT stop
+                # update_pipeline_parameters() from re-picking each edge's gas
+                # mixture from the sign of its flow rate on every residual
+                # evaluation, which makes the residual discontinuous in x and
+                # stalls the line search.  freeze_mixture_during_newton is what
+                # actually delivers the "composition frozen" promised here.
                 network.run_composition_initialization = False
-                inner_strategy.solve(
-                    network, tracking_method="no_mixing", **common
-                )
+                network.freeze_mixture_during_newton = True
+                try:
+                    inner_strategy.solve(
+                        network, tracking_method="no_mixing", **common
+                    )
+                finally:
+                    network.freeze_mixture_during_newton = False
 
                 current_pressure = np.array(
                     network.save_pressure_values(), copy=True
@@ -140,10 +164,49 @@ class StaggeredStrategy(Strategy):
                     cached_batch_information=cached_batch_information,
                 )
                 target_composition = network._snapshot_nodal_eos_compositions()
+
+                # --- Rilassamento della composizione ---------------------------
+                # Fisso (composition_relaxation_factor) oppure ADATTIVO di Aitken
+                # (Irons–Tuck): stima a ogni iterazione il fattore di
+                # rilassamento ottimale dai residui successivi, accelerando una
+                # convergenza altrimenti lineare (rate 0.5 → ~15 iterazioni).
+                #
+                # omega resta in [0.1, 1.0]: MAI sovra-rilassamento. La
+                # composizione è una variabile vincolata (frazioni molari ≥ 0,
+                # somma 1); a omega=1 si prende la composizione propagata (già
+                # valida), per omega<1 una combinazione convessa di due
+                # composizioni valide (ancora valida). Con omega>1 si
+                # estrapolerebbe fuori dal simplesso → frazioni negative.
+                omega = self.composition_relaxation_factor
+                if self.aitken_acceleration:
+                    _nonj = set(network.non_junction_nodes)
+                    _parts = [
+                        target_composition[nid] - previous_composition[nid]
+                        for nid in network.nodes
+                        if nid not in _nonj
+                    ]
+                    r = (
+                        np.concatenate(_parts)
+                        if _parts
+                        else np.zeros(0)
+                    )
+                    if aitken_prev_r is not None and r.size:
+                        dr = r - aitken_prev_r
+                        denom = float(dr @ dr)
+                        if denom > 1e-30:
+                            aitken_omega = (
+                                -aitken_omega
+                                * float(aitken_prev_r @ dr)
+                                / denom
+                            )
+                        aitken_omega = min(max(aitken_omega, 0.1), 1.0)
+                    omega = aitken_omega
+                    aitken_prev_r = r
+
                 composition_delta = network._apply_relaxed_nodal_compositions(
                     previous_composition,
                     target_composition,
-                    self.composition_relaxation_factor,
+                    omega,
                 )
 
                 pressure_delta = (
@@ -154,11 +217,12 @@ class StaggeredStrategy(Strategy):
 
                 logger.info(
                     "Staggered coupling iteration %d/%d: "
-                    "pressure delta %.3f Pa, composition delta %.3e",
+                    "pressure delta %.3f Pa, composition delta %.3e, omega %.3f",
                     outer_iter,
                     self.coupling_max_iter,
                     pressure_delta,
                     composition_delta,
+                    omega,
                 )
 
                 if (
