@@ -140,8 +140,17 @@ def calculate_stable_flow_rate(connection, tol=0.001, max_iter=5):
     while _change >= tol and n_iter < max_iter:
         _current_flow_rate = connection.calc_flow_rate()
 
-        # Calculate the change as the absolute percentage difference
-        _change = abs((_current_flow_rate - _previous_flow_rate) / _previous_flow_rate)
+        # Calculate the change as the absolute percentage difference.
+        # Guardia sullo zero: con flusso ~nullo (_previous_flow_rate == 0) la
+        # divisione dava nan → il confronto "nan >= tol" e' False e il ciclo
+        # usciva comunque, ma con un RuntimeWarning "invalid value in scalar
+        # divide". Se il flusso precedente e' zero: nessuna variazione se anche
+        # quello corrente e' zero (convergiuto), altrimenti forziamo un altro
+        # giro (inf).
+        if _previous_flow_rate == 0:
+            _change = 0.0 if _current_flow_rate == 0 else float("inf")
+        else:
+            _change = abs((_current_flow_rate - _previous_flow_rate) / _previous_flow_rate)
 
         # Update the previous_flow_rate for the next iteration
         _previous_flow_rate = _current_flow_rate

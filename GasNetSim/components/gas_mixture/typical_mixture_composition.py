@@ -124,6 +124,39 @@ BIO_METHANE_LPG_MIX = {
     "oxygen": 0.0019,
 }
 
+# Italian gas (SNAM) compositions — source: SNAM gas quality data (mole fractions)
+# Volume reference: 15°C / 1.01325 bar (Sm³) per UNI EN ISO 13443
+# Combustion reference: 25°C per UNI EN ISO 6976
+# Mazara del Vallo (Algerian gas via Tunisia) — primary Sicilian supply point
+SNAM_MAZARA_GAS = {
+    "methane": 0.86909,
+    "ethane": 0.08661,
+    "propane": 0.01163,
+    "isobutane": 0.00072,
+    "butane": 0.00112,
+    "isopentane": 0.00019,
+    "pentane": 0.00019,
+    "hexane": 0.00014,       # includes C6+ (esani+)
+    "nitrogen": 0.01334,
+    "carbon dioxide": 0.01672,
+    "helium": 0.00025,
+}
+
+# Gela (Libyan gas, Greenstream pipeline) — secondary Sicilian supply point
+SNAM_GELA_GAS = {
+    "methane": 0.86645,
+    "ethane": 0.05246,
+    "propane": 0.02022,
+    "isobutane": 0.00317,
+    "butane": 0.00478,
+    "isopentane": 0.00071,
+    "pentane": 0.00026,
+    "hexane": 0.00060,       # includes C6+ (esani+)
+    "nitrogen": 0.04455,
+    "carbon dioxide": 0.00602,
+    "helium": 0.00078,
+}
+
 
 # COMMON_GAS_COMPOSITIONS: A dictionary of common gas mixture compositions
 COMMON_GAS_COMPOSITIONS = {
@@ -137,4 +170,6 @@ COMMON_GAS_COMPOSITIONS = {
     "GERMAN_NATURAL_GAS": GERMAN_NATURAL_GAS,
     "BIO_METHANE": BIO_METHANE,
     "BIO_METHANE_LPG_MIX": BIO_METHANE_LPG_MIX,
+    "SNAM_MAZARA_GAS": SNAM_MAZARA_GAS,
+    "SNAM_GELA_GAS": SNAM_GELA_GAS,
 }

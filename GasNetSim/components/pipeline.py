@@ -25,6 +25,15 @@ STANDARD_PRESSURE = 1 * atm  # 1 atm in pa
 # At 70 bar the equivalent pressure difference is ~7 nPa — physically negligible.
 _DELTA_P2_MIN = 1.0  # Pa²
 
+# NOTA: un pavimento piu' aggressivo su |p1^2 - p2^2| proporzionale a (p1+p2)
+# e' stato PROVATO e RIMOSSO. L'idea era limitare la derivata |delta|^(-0.5)
+# sui nodi terminali a portata quasi nulla (dove delta -> 0). In pratica il
+# pavimento interveniva anche su nodi a portata MODERATA, rendendo la derivata
+# troppo piccola: il Jacobiano non corrispondeva piu' al residuo (verifica
+# alle differenze finite: analitico ~5x < numerico sui nodi 6412/6273) e la
+# convergenza del baseline si rompeva. Il regime lineare lento sui terminali
+# va affrontato correggendo la derivata, non con un pavimento cieco.
+
 
 class Pipeline:
     """
@@ -357,7 +366,7 @@ class Pipeline:
         elif p1**2 - p2**2 - slope_correction < 0:
             return -1
         else:
-            print(f"Pipeline {self.inlet_index} has same pressure on both ends: {(p1, p2)}!")
+            # print(f"Pipeline {self.inlet_index} has same pressure on both ends: {(p1, p2)}!")
             # raise ValueError('Got condition case 0.')
             return 0
 
@@ -390,6 +399,11 @@ class Pipeline:
             self.calculate_coefficient_for_iteration() * self.conversion_factor
         )
         delta = abs(p1**2 - p2**2 - slope_corr)
+        # Guardia minimale contro (0)^(-0.5): interviene solo all'uguaglianza
+        # esatta delle pressioni. Un pavimento piu' aggressivo (provato con
+        # _DP_MIN_PA proporzionale a p1+p2) rende la derivata troppo piccola
+        # sui nodi a portata moderata, sfalsando il Jacobiano e rompendo la
+        # convergenza del baseline (verificato: analitico 5x < numerico).
         tmp = max(delta, _DELTA_P2_MIN) ** (-0.5)
         dsc_dp = self.calc_slope_correction_pressure_derivative(is_inlet)
 
@@ -534,6 +548,11 @@ class Resistance:
         slope_corr = self.calc_pipe_slope_correction()
         pipeline_coefficient = self.calculate_coefficient_for_iteration()
         delta = abs(p1**2 - p2**2 - slope_corr)
+        # Guardia minimale contro (0)^(-0.5): interviene solo all'uguaglianza
+        # esatta delle pressioni. Un pavimento piu' aggressivo (provato con
+        # _DP_MIN_PA proporzionale a p1+p2) rende la derivata troppo piccola
+        # sui nodi a portata moderata, sfalsando il Jacobiano e rompendo la
+        # convergenza del baseline (verificato: analitico 5x < numerico).
         tmp = max(delta, _DELTA_P2_MIN) ** (-0.5)
 
         if is_inlet:

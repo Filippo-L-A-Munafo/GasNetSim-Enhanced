@@ -118,6 +118,15 @@ class StaggeredStrategy(Strategy):
         aitken_prev_r = None
         aitken_omega = float(self.composition_relaxation_factor)
 
+        # Anti-ciclo-limite: rilassamento della composizione che si RIDUCE (mai
+        # risale) quando l'accoppiamento entra in oscillazione periodica. Attivo
+        # quando Aitken è spento (default). Rompe il ciclo limite prodotto da un
+        # tubo che inverte il flusso e flippa la miscela fra le iterazioni
+        # esterne: abbassare ω rallenta il movimento della composizione, quindi
+        # dei flussi, finché il tubo smette di attraversare lo zero.
+        relax_current = float(self.composition_relaxation_factor)
+        prev_comp_delta = None
+
         try:
             for outer_iter in range(1, self.coupling_max_iter + 1):
                 if outer_iter > 1:
@@ -177,7 +186,7 @@ class StaggeredStrategy(Strategy):
                 # valida), per omega<1 una combinazione convessa di due
                 # composizioni valide (ancora valida). Con omega>1 si
                 # estrapolerebbe fuori dal simplesso → frazioni negative.
-                omega = self.composition_relaxation_factor
+                omega = relax_current
                 if self.aitken_acceleration:
                     _nonj = set(network.non_junction_nodes)
                     _parts = [
@@ -208,6 +217,24 @@ class StaggeredStrategy(Strategy):
                     target_composition,
                     omega,
                 )
+
+                # Anti-ciclo-limite: se la composizione RISALE (segno tipico
+                # dell'oscillazione da inversione di flusso), abbassa il
+                # rilassamento per il giro successivo. Monotòno: non risale mai,
+                # così non può reintrodurre l'instabilità del vecchio adattivo.
+                if (not self.aitken_acceleration
+                        and prev_comp_delta is not None
+                        and composition_delta > prev_comp_delta * 1.05):
+                    _new_relax = max(relax_current * 0.5, 0.05)
+                    if _new_relax < relax_current:
+                        relax_current = _new_relax
+                        logger.info(
+                            "Staggered: oscillazione rilevata (composition delta "
+                            "risalito %.3e > %.3e) → riduco il rilassamento a "
+                            "%.3f per rompere il ciclo",
+                            composition_delta, prev_comp_delta, relax_current,
+                        )
+                prev_comp_delta = composition_delta
 
                 pressure_delta = (
                     np.inf

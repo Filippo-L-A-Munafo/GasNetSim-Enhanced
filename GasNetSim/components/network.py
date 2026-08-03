@@ -145,8 +145,32 @@ class Network:
         Get the number of nodes for matrix/vector dimensions.
         """
         return len(self.nodes)
-    
+
+    def update_demands(self, csv_file: str):
+        """
+        Update the volumetric flow of all nodes using a new sf_nodes.csv file.
+        This is used for sequential warm-start simulations (e.g., hourly).
+        """
+        import pandas as pd
+        df = pd.read_csv(csv_file, sep=';')
+        
+        # Check if flow column exists
+        flow_col = 'flow_sm3_per_s'
+        if flow_col not in df.columns:
+            return
+            
+        for _, row in df.iterrows():
+            node_id = row['node_index']
+            flow = row[flow_col]
+            if pd.isna(flow):
+                flow = 0.0
+                
+            if node_id in self.nodes:
+                self.nodes[node_id].volumetric_flow = flow
+                self.nodes[node_id].convert_volumetric_to_energy_flow()
+                
     def _create_connection_mappings(self):
+
         """
         Create index mappings for connections after all edge components are combined.
         
@@ -439,7 +463,70 @@ class Network:
                 f"Unknown initialization strategy: '{self.initialization_strategy}'. "
                 f"Available: {list(INITIALIZATION_STRATEGIES.keys())}"
             )
-        return INITIALIZATION_STRATEGIES[self.initialization_strategy](self, **self.initialization_kwargs)
+        pressure_init = INITIALIZATION_STRATEGIES[self.initialization_strategy](
+            self, **self.initialization_kwargs
+        )
+        return self._propagate_through_compressors(pressure_init)
+
+    def _propagate_through_compressors(self, pressure_init, num_passes: int = 8):
+        """Estende l'inizializzazione attraverso gli archi compressore.
+
+        PERCHE' SERVE. Le strategie di inizializzazione (resistance_weighted,
+        che e' il default, e graph_based) camminano sulla rete seguendo
+        `network.pipelines`. Un compressore NON e' una pipeline: e' un arco a
+        se', quindi per loro non esiste. Tutta la sotto-rete che dipende da un
+        compressore per raggiungere un nodo reference viene percio'
+        inizializzata come se fosse scollegata dall'alimentazione.
+
+        Finche' il nodo di mandata era un reference a pressione fissa il
+        problema non si vedeva: la sotto-rete di valle partiva da li'. Con la
+        formulazione aumentata quel nodo e' una giunzione normale, e senza
+        questa propagazione il punto di partenza e' molto lontano dalla
+        soluzione: su run_231 le pressioni iniziali portavano Newton a chiedere
+        passi da 112 bar e a stallare subito.
+
+        Si applica lo stesso schema di compressor_aware_initialization: piu'
+        passate smorzate, cosi configurazioni in serie o in anello si
+        stabilizzano senza oscillare.
+        """
+        if not self.compressors:
+            return pressure_init
+
+        riferimenti = set(self.reference_nodes or [])
+
+        for _ in range(num_passes):
+            cambiato = False
+            for compressor in self.compressors.values():
+                # Un reference ha pressione imposta: non si tocca.
+                if compressor.outlet_index in riferimenti:
+                    continue
+                try:
+                    i = self.node_id_to_simulation_node_index(compressor.inlet_index)
+                    j = self.node_id_to_simulation_node_index(compressor.outlet_index)
+                except (ValueError, KeyError):
+                    continue
+
+                p_in = pressure_init[i]
+                if p_in is None or not p_in:
+                    continue
+
+                modo = getattr(compressor, "control_mode", "ratio")
+                target = getattr(compressor, "p_out_target", None)
+                if modo == "pressure" and target:
+                    atteso = float(target)
+                else:
+                    atteso = float(p_in) * float(compressor.compression_ratio)
+
+                vecchio = pressure_init[j] or 0.0
+                # Smorzamento come in compressor_aware_initialization.
+                pressure_init[j] = 0.7 * atteso + 0.3 * vecchio
+                if abs(atteso - vecchio) > 1000.0:  # > 0.01 bar
+                    cambiato = True
+
+            if not cambiato:
+                break
+
+        return pressure_init
 
     def composition_initialization(
         self,
@@ -573,11 +660,11 @@ class Network:
         self._refresh_network_state_from_gas_mixtures()
         return max_delta
 
-    def newton_raphson_initialization(self):
+    def newton_raphson_initialization(self, warm_start=False):
         """
-        Initialization for NR-solver, where the nodal pressures are initialized as 0.98 of inlet pressure and nodal
-        temperatures are the same as pipe surrounding temperatures
-        :return: Network initial conditions for NR-solver
+        Initialization for NR-solver.
+        If warm_start=True, it uses the current node pressures.
+        Otherwise, nodal pressures are initialized as 0.98 of inlet pressure.
         """
 
         nodes = self.nodes
@@ -592,24 +679,16 @@ class Network:
         # TODO consider the case where ref_nodes do not start with index 0
         p_ref_nodes = self.reference_nodes
 
-        # for node in self.nodes.values():
-        #     HHV = calc_heating_value(node.gas_mixture)
-        #     if node.flow_type == 'volumetric':
-        #         pass
-        #     elif node.flow_type == 'energy':
-        #         gas_comp = node.get_mole_fraction()
-        #         node.flow = node.flow / HHV * 1e6 / GasMixture(composition=gas_comp,
-        #                                                        temperature=288.15,
-        #                                                        pressure=101325).density
-        #         logging.debug(node.flow)
-        #         node.flow_type = 'volumetric'
-        #     else:
-        #         raise AttributeError(f'Unknown flow type {node.flow_type}!')
         nodal_flow_init = [
             x.volumetric_flow if x.volumetric_flow is not None else 0
             for x in nodes.values()
         ]
-        pressure_init = [x.pressure for x in nodes.values()]
+        
+        # If warm start, we just take the current pressure instead of recalculating
+        if warm_start:
+            pressure_init = [x.pressure for x in nodes.values()]
+        else:
+            pressure_init = [x.pressure for x in nodes.values()]
 
         # TODO use ambient temperature to initialize outlet temperature
         temperature_init = [
@@ -623,10 +702,11 @@ class Network:
             sim_node_idx = self.node_id_to_simulation_node_index(n)
             nodal_flow_init[sim_node_idx] = -total_flow / len(p_ref_nodes)
 
-        if self.run_initialization:
-            pressure_init = self.pressure_initialization()
-        else:
-            pressure_init = self.pressure_prev
+        if not warm_start:
+            if self.run_initialization:
+                pressure_init = self.pressure_initialization()
+            else:
+                pressure_init = self.pressure_prev
 
         for i in range(len(nodal_flow_init)):
             node_id = self.simulation_node_index_to_node_id(i)
@@ -683,22 +763,43 @@ class Network:
 
             if type(connection) is not ShortPipe:
                 if type(connection) is Compressor:
-                    # Use the proper derivatives from compressor class
-                    total_flow_in, total_derivative_in, total_flow_out, total_derivative_out = connection.calculate_incoming_flows_and_derivatives(
-                        self.pipelines.values()
-                    )
-        
-                    jacobian_mat[i][i] += total_derivative_in
-                    jacobian_mat[j][j] += total_derivative_out
-                    jacobian_mat[i][j] -= total_derivative_in
-                    jacobian_mat[j][i] -= total_derivative_out
+                    # NOTE: no Jacobian contribution from the compressor.
+                    #
+                    # The previous implementation called
+                    # calculate_incoming_flows_and_derivatives() and added
+                    # total_derivative_in / total_derivative_out here.  Those
+                    # quantities are sums of the FIRST-ORDER DERIVATIVES OF THE
+                    # ADJACENT PIPELINES, which the pipeline branch below has
+                    # already accumulated into the very same diagonal entries —
+                    # with the opposite sign.  For every pipe p feeding the
+                    # compressor inlet the pipeline branch writes
+                    #     jacobian[i][i] += -p.deriv(is_inlet=False)
+                    # and the compressor block wrote
+                    #     jacobian[i][i] += +p.deriv(is_inlet=False)
+                    # so the two cancelled exactly, wiping the inlet node's
+                    # diagonal and leaving a near-singular row.  The resulting
+                    # Newton direction is not a descent direction, the line
+                    # search cannot find any step that reduces the residual,
+                    # and the solver stalls.  (The block also lacked the
+                    # non_junction_nodes_sim_indices guards used below.)
+                    #
+                    # A pressure-controlled compressor holds its outlet at the
+                    # target pressure and passes flow freely, so d(flow)/dp at
+                    # the inlet is ~0 to first order: contributing nothing is
+                    # both simpler and closer to the truth.  The compressor
+                    # still enters the RESIDUAL through flow_mat above, so this
+                    # is a quasi-Newton treatment — slightly slower asymptotic
+                    # convergence, but a consistent, non-singular Jacobian.
+                    pass
                 else:
                     # Standard pipeline/resistance handling
-                    slope_corr = connection.calc_pipe_slope_correction()
-                    p1 = connection.inlet.pressure
-                    p2 = connection.outlet.pressure
-                    tmp = (abs(p1**2 - p2**2 - slope_corr)) ** (-0.5)
-
+                    # NB: rimossa la riga morta
+                    #     tmp = (abs(p1**2 - p2**2 - slope_corr)) ** (-0.5)
+                    # 'tmp' non veniva mai usata (la derivata reale e' in
+                    # flow_rate_first_order_derivative, gia' regolarizzata con
+                    # _DELTA_P2_MIN). Con flusso ~zero (p1≈p2) la base andava a 0
+                    # e 0**(-0.5)=inf generava il RuntimeWarning "divide by zero
+                    # in scalar power": rumore innocuo, ora eliminato.
                     if i not in non_junction_nodes_sim_indices and j not in non_junction_nodes_sim_indices:
                         jacobian_mat[i][j] += connection.flow_rate_first_order_derivative(
                             is_inlet=False
@@ -819,11 +920,30 @@ class Network:
     def update_compressor_parameters(self):
         """Update compressor parameters and calculate flow rates."""
         if self.compressors is not None:
+            # Quando la formulazione aumentata e attiva, la portata di ogni
+            # compressore e una VERA INCOGNITA del sistema (vedi
+            # PressureProblem con augment_compressors=True): viene scritta in
+            # compressor.flow_rate a partire da x prima di questa chiamata.
+            #
+            # In quel caso qui non si deve fare nulla di piu che riallineare i
+            # riferimenti ai nodi e la miscela. In particolare NON si deve:
+            #  * ricalcolare flow_rate con l'euristica della media, perche
+            #    sovrascriverebbe l'incognita;
+            #  * sovrascrivere la pressione del nodo di uscita, perche quello
+            #    e' esattamente il difetto che rende il residuo non funzione
+            #    di x (passi da centinaia di bar annullati dalla riscrittura).
+            #    Il legame p_out = ratio * p_in e' ora imposto da una riga di
+            #    vincolo del sistema, non da un'assegnazione.
+            augmented = getattr(self, "compressor_flow_from_state", False)
+
             for index, compressor in self.compressors.items():
                 compressor.inlet = self.nodes[compressor.inlet_index]
                 compressor.outlet = self.nodes[compressor.outlet_index]
                 compressor.update_gas_mixture()
-                
+
+                if augmented:
+                    continue
+
                 # Calculate compressor flow rates from connected pipelines
                 if self.pipelines is not None:
                     total_flow_in, total_derivative_in, total_flow_out, total_derivative_out = \
@@ -836,7 +956,14 @@ class Network:
                     compressor.update_flow_rate(total_flow_in, total_flow_out, inlet_node_demand, outlet_node_demand)
                     
                     # Enforce compressor pressure constraint
-                    self.nodes[compressor.outlet_index].pressure = self.nodes[compressor.inlet_index].pressure * compressor.compression_ratio
+                    if getattr(compressor, 'control_mode', 'ratio') == 'pressure':
+                        if getattr(compressor, 'p_out_target', None) is not None:
+                            # In PCM, the outlet pressure is fixed by the Reference node.
+                            # We just update the ratio for power consumption calculations.
+                            inlet_p = max(self.nodes[compressor.inlet_index].pressure, 1.0)
+                            compressor.compression_ratio = max(compressor.p_out_target / inlet_p, 1.0)
+                    else:
+                        self.nodes[compressor.outlet_index].pressure = self.nodes[compressor.inlet_index].pressure * compressor.compression_ratio
 
     def update_connection_flow_rate(self):
         for connection in self.connections.values():
@@ -911,6 +1038,7 @@ class Network:
         coupling_tol=1e-4,
         outer_pressure_tol=None,
         composition_relaxation_factor=0.5,
+        warm_start=False,
     ):
         from GasNetSim.simulation.strategies import DirectStrategy, StaggeredStrategy
 
@@ -922,6 +1050,7 @@ class Network:
             sparse_matrix=sparse_matrix,
             tracking_method=tracking_method,
             time_step=time_step,
+            warm_start=warm_start,
         )
 
         if coupling_strategy == "direct":

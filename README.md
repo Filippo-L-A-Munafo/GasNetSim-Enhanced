@@ -7,6 +7,39 @@
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/git/https%3A%2F%2Fjugit.fz-juelich.de%2Fiek-10%2Fpublic%2Fsimulation%2Fgasnetsim/HEAD)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
+## Fork Notice
+
+This repository is a **fork of [GasNetSim](https://jugit.fz-juelich.de/iek-10/public/simulation/gasnetsim)**,
+originally developed by **ICE-1: Energy Systems Engineering, Forschungszentrum Jülich GmbH**
+(maintainer: Yifei Lu, `yifei.lu@fz-juelich.de`). All credit for the original simulation engine —
+the steady-state solver architecture, the GERG-2008 gas mixture modeling, and the overall package
+design — belongs to the original authors. If you use this software, please cite the original work
+(see the DOI badge above, or the [upstream repository](https://jugit.fz-juelich.de/iek-10/public/simulation/gasnetsim)
+for the full citation).
+
+This fork is maintained by **Filippo Munafo** (University of Palermo) as the simulation engine
+behind the [GasNetSim_4Qgis](https://github.com/Filippo-L-A-Munafo/GasNetSim_4Qgis) QGIS plugin.
+The full original commit history is preserved; on top of it, this fork adds:
+
+- **Compressor support**: a new `Compressor` component with an *augmented* Newton–Raphson
+  formulation (`simulation/formulations/pressure_problem.py`) that solves compressor flow rates
+  and pressure ratios as first-class unknowns alongside nodal pressures, with two control modes
+  (`ratio` and `pressure`/discharge-pressure target).
+- **Solver robustness fixes**: sparse (`spsolve`)/regularized fallback for ill-conditioned
+  Jacobians, adaptive under-relaxation, step-cap and pressure-floor safeguards, and a fix for the
+  `inf`/`NaN` Jacobian entries that appeared when two connected nodes had (near-)equal pressure.
+- **Staggered pressure/composition coupling improvements**: Aitken (Irons–Tuck) acceleration and
+  an additional adaptive relaxation fallback to damp composition oscillations on flow-reversing
+  pipelines.
+- Two Sicilian gas supply compositions (`SNAM_MAZARA_GAS`, `SNAM_GELA_GAS`) added to
+  `components/gas_mixture/typical_mixture_composition.py`.
+
+See [CHANGELOG.md](CHANGELOG.md) for the detailed, dated list of changes. This fork is released
+under the same license as upstream — MPL-2.0, see [LICENSE](LICENSE) — and every modified file
+retains that license as required by MPL-2.0 §3.3.
+
+---
+
 # **GasNetSim**
 
 *GasNetSim* is a simulation package designed for gas network steady-state simulation.

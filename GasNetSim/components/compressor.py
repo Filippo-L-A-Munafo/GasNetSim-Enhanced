@@ -29,6 +29,8 @@ class Compressor:
         thermodynamic_process="isentropic",
         efficiency=0.85,
         gas_density=None,
+        control_mode="ratio",
+        p_out_target=None,
     ):
         self.compressor_index = compressor_index
         self.inlet = inlet
@@ -42,6 +44,8 @@ class Compressor:
         self.compression_ratio = compression_ratio
         self.efficiency = efficiency
         self.gas_density = gas_density or inlet.gas_mixture.density
+        self.control_mode = control_mode
+        self.p_out_target = p_out_target
         
         if thermodynamic_process == "isentropic":
             self.n = self.cp / self.cv
@@ -61,10 +65,45 @@ class Compressor:
         self.outflow_composition = inlet.gas_mixture.eos_composition if hasattr(inlet.gas_mixture, 'eos_composition') else None
 
     def update_flow_rate(self, total_flow_in, total_flow_out, inlet_node_demand, outlet_node_demand):
-        """Update compressor flow rate based on mass balance."""
-        # Compressor flow = average of inlet and outlet flow balances
-        self.flow_rate = (total_flow_in - inlet_node_demand + total_flow_out + outlet_node_demand) / 2
-            
+        """Update compressor flow rate based on mass balance.
+
+        Which side determines the flow depends on which node balances are
+        actually enforced.  The residual assembled in PressureProblem._compute
+        covers JUNCTION nodes only — reference nodes are dropped, so their
+        balance is free and carries no information.
+
+        * Outlet is a reference node (pressure-control mode, where the plugin
+          splits the station and pins the outlet at p_out_target).  The outlet
+          balance is not enforced, so averaging it in would tie half of the
+          inlet node's equation to an unconstrained quantity: the inlet
+          residual then measures the GLOBAL mismatch between upstream supply
+          and downstream draw, which Newton can only close through slow
+          network-wide coupling, and whose local derivative does not match the
+          Jacobian diagonal assembled from the adjacent pipelines.  That is a
+          linear crawl, not convergence.  Taking the outlet-side draw instead
+          makes the inlet balance a genuine equation in p_inlet whose
+          derivative IS the pipeline diagonal, restoring quadratic behaviour.
+        * Inlet is a reference node: mirror image, take the inlet side.
+        * Both are junctions: neither balance is free, the symmetric average is
+          the right compromise (original behaviour, unchanged).
+        """
+        inlet_is_reference = getattr(self.inlet, "node_type", None) == "reference"
+        outlet_is_reference = getattr(self.outlet, "node_type", None) == "reference"
+
+        if outlet_is_reference and not inlet_is_reference:
+            # Deliver exactly what the downstream network draws from the
+            # reference outlet; the reference node absorbs any discrepancy,
+            # which is precisely what a reference node is for.
+            self.flow_rate = total_flow_out + outlet_node_demand
+        elif inlet_is_reference and not outlet_is_reference:
+            self.flow_rate = total_flow_in - inlet_node_demand
+        else:
+            self.flow_rate = (
+                total_flow_in - inlet_node_demand
+                + total_flow_out + outlet_node_demand
+            ) / 2
+
+
         # Convert to mass flow rate
         std_density = self.gas_mixture.standard_density if hasattr(self.gas_mixture, 'standard_density') else 0.8  # kg/sm3
         self.mass_flow_rate = self.flow_rate * std_density

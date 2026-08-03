@@ -8,6 +8,7 @@
 #    *****************************************************************************
 from collections import OrderedDict
 from pathlib import Path
+import logging
 import numpy as np
 import pandas as pd
 import warnings
@@ -154,11 +155,47 @@ def read_compressors(path_to_file: Path, network_nodes: dict) -> dict:
             efficiency = float(row["efficiency"]) if row["efficiency"] is not None else 0.85
             thermodynamic_process = row["thermodynamic_process"] if row["thermodynamic_process"] is not None else "isentropic"
             drive = row["drive"] if "drive" in row and row["drive"] is not None else "electric"
-            
+
+            # Modalita' di controllo e pressione di mandata.
+            #
+            # Queste due colonne venivano IGNORATE: il Compressor nasceva
+            # sempre con i default del costruttore (control_mode="ratio",
+            # p_out_target=None), quindi un CSV che chiedeva
+            # control_mode=pressure con p_out_target=7e6 veniva risolto come
+            # se fosse a rapporto fisso. Il target di mandata non arrivava mai
+            # al solver, e le due modalita' producevano risultati identici.
+            control_mode = "ratio"
+            if "control_mode" in row and row["control_mode"] is not None:
+                valore = str(row["control_mode"]).strip().lower()
+                if valore in ("ratio", "pressure"):
+                    control_mode = valore
+
+            p_out_target = None
+            if "p_out_target" in row and row["p_out_target"] is not None:
+                try:
+                    grezzo = float(row["p_out_target"])
+                    # Le celle vuote diventano NaN -> None sopra, ma un CSV
+                    # scritto a mano puo' contenere 0: un target nullo non ha
+                    # senso fisico e va trattato come "non specificato".
+                    if grezzo > 0:
+                        p_out_target = grezzo
+                except (TypeError, ValueError):
+                    p_out_target = None
+
+            # Un controllo di pressione senza target non e' realizzabile:
+            # si ricade sul rapporto invece di fallire silenziosamente.
+            if control_mode == "pressure" and p_out_target is None:
+                logging.warning(
+                    "Compressore %s: control_mode='pressure' ma p_out_target "
+                    "assente o non valido. Uso il controllo di rapporto.",
+                    compressor_index,
+                )
+                control_mode = "ratio"
+
             # Get inlet and outlet nodes
             inlet_node = network_nodes[inlet_index]
             outlet_node = network_nodes[outlet_index]
-            
+
             # Create compressor object
             compressor = Compressor(
                 compressor_index=compressor_index,
@@ -167,7 +204,9 @@ def read_compressors(path_to_file: Path, network_nodes: dict) -> dict:
                 compression_ratio=compression_ratio,
                 efficiency=efficiency,
                 thermodynamic_process=thermodynamic_process,
-                drive=drive
+                drive=drive,
+                control_mode=control_mode,
+                p_out_target=p_out_target,
             )
             
             compressors[compressor_index] = compressor
