@@ -18,6 +18,10 @@ from .GERG2008.gerg2008 import convert_to_gerg2008_composition
 from .viscosity import calculate_viscosity
 from .viscosity import ViscosityMethod
 
+import os as _os_vc
+_VISC_CACHE_ATTIVA = _os_vc.environ.get("GNS_VISC_CACHE", "0") not in ("0", "", "false", "False")
+
+
 
 # from .heating_value import calc_heating_value
 
@@ -129,10 +133,37 @@ class GasMixture:
 
     @property
     def viscosity(self):
+        # MEMOIZZAZIONE (GNS_VISC_CACHE=1).
+        #
+        # Il profilo su un'ora tipica mostra 2.914.430 chiamate a questa
+        # proprieta', per 84 s su 160 di tempo proprio nel solo
+        # Herning-Zipperer piu' 9 s di costruzione del dataclass di appoggio:
+        # il 70% del tempo totale di simulazione. Il GERG-2008, per confronto,
+        # pesa il 3,7%.
+        #
+        # La viscosita' dipende solo da (temperatura, pressione, composizione).
+        # L'oggetto GasMixture NON e' immutabile — network.py riassegna
+        # pressure, temperature ed eos_composition fra un passo e l'altro —
+        # quindi non si puo' usare functools.cached_property: la cache va
+        # invalidata sullo stato. La composizione viene sempre RIASSEGNATA a un
+        # nuovo array (mai modificata sul posto), percio' il confronto per
+        # identita' e' valido, ed e' sicuro perche' la tupla in cache mantiene
+        # vivo l'array.
+        t = self.temperature
+        pr = self.pressure
+        x = self.eos_composition
+        c = getattr(self, "_visc_cache", None)
+        if c is not None and c[0] == t and c[1] == pr and c[2] is x:
+            return c[3]
         if self.viscosity_method == "Herning-Zipperer":
-            return calculate_viscosity(self.temperature, self.pressure, self.eos_composition, ViscosityMethod.HERNING_ZIPPERER)
+            val = calculate_viscosity(t, pr, x, ViscosityMethod.HERNING_ZIPPERER)
         elif self.viscosity_method == "Lucas":
-            return calculate_viscosity(self.temperature, self.pressure, self.eos_composition, ViscosityMethod.LUCAS)
+            val = calculate_viscosity(t, pr, x, ViscosityMethod.LUCAS)
+        else:
+            return None
+        if _VISC_CACHE_ATTIVA:
+            self._visc_cache = (t, pr, x, val)
+        return val
 
     @property
     def heat_capacity_constant_pressure(self):

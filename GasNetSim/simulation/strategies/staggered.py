@@ -6,6 +6,19 @@ import numpy as np
 from .base_strategy import Strategy
 from .direct import DirectStrategy
 
+import os as _os
+_STAG_FIX_ATTIVA = _os.environ.get("GNS_STAG_FIX", "0") not in ("0", "", "false", "False")
+# Criterio di arresto RELATIVO sulla pressione (GNS_PTOL_REL=1).
+# La formulazione originale usa outer_pressure_tol = max(10, tol*1e5), dove tol
+# e' la tolleranza sulle PORTATE in Sm3/s: il fattore 1e5 e' la conversione
+# bar->Pa, cioe' si prende il numero 0,01 e lo si tratta come se fossero bar.
+# E' dimensionalmente privo di senso e non scala con la pressione della rete:
+# 1000 Pa sono lo 0,0013% a 76 bar e l'1,4% a 7 bar. Qui la soglia diventa una
+# frazione della pressione assoluta massima della rete (default 0,1%).
+_PTOL_REL_ATTIVA = _os.environ.get("GNS_PTOL_REL", "0") not in ("0", "", "false", "False")
+_PTOL_REL_FRAZIONE = float(_os.environ.get("GNS_PTOL_REL_FRAZIONE", "0.001"))
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -222,9 +235,18 @@ class StaggeredStrategy(Strategy):
                 # dell'oscillazione da inversione di flusso), abbassa il
                 # rilassamento per il giro successivo. Monotòno: non risale mai,
                 # così non può reintrodurre l'instabilità del vecchio adattivo.
+                # Con GNS_STAG_FIX=1 la guardia scatta anche sulla
+                # STAGNAZIONE, non solo sulla risalita. Un ciclo limite di
+                # periodo 2 perfetto — due stati che si alternano identici —
+                # ha composition_delta COSTANTE: il test originale
+                # (delta > prev * 1.05) non si attiva mai e il rilassamento
+                # resta fermo a 0,5 per tutte le iterazioni disponibili.
+                # Con la soglia a 0.98 basta che lo scarto non cali di almeno
+                # il 2% perche' omega venga dimezzato, il che rompe il ciclo.
+                _soglia_ciclo = 0.98 if _STAG_FIX_ATTIVA else 1.05
                 if (not self.aitken_acceleration
                         and prev_comp_delta is not None
-                        and composition_delta > prev_comp_delta * 1.05):
+                        and composition_delta > prev_comp_delta * _soglia_ciclo):
                     _new_relax = max(relax_current * 0.5, 0.05)
                     if _new_relax < relax_current:
                         relax_current = _new_relax
@@ -242,13 +264,22 @@ class StaggeredStrategy(Strategy):
                     else float(np.max(np.abs(current_pressure - previous_pressure)))
                 )
 
+                # Soglia relativa: frazione della pressione assoluta di rete.
+                if _PTOL_REL_ATTIVA:
+                    _p_rif = float(np.max(np.abs(current_pressure))) if current_pressure.size else 0.0
+                    if _p_rif > 0.0:
+                        outer_pressure_tol = _PTOL_REL_FRAZIONE * _p_rif
+
                 logger.info(
                     "Staggered coupling iteration %d/%d: "
-                    "pressure delta %.3f Pa, composition delta %.3e, omega %.3f",
+                    "pressure delta %.3f Pa (soglia %.1f Pa), "
+                    "composition delta %.3e (soglia %.1e), omega %.3f",
                     outer_iter,
                     self.coupling_max_iter,
                     pressure_delta,
+                    outer_pressure_tol,
                     composition_delta,
+                    self.coupling_tol,
                     omega,
                 )
 
