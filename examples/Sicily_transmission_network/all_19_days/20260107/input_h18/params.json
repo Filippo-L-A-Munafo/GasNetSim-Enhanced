@@ -1,0 +1,42 @@
+{
+  "cartella": "C:\\Users\\Munafo'\\OneDrive - UNIPA\\Dottorato\\Antigravity\\_moduli\\Articolo_Filippo\\cartella delle simulazioni\\ROADMAP_BLENDING_DEFINITIVA\\1392_pct_h2\\sf_node_20260107_S1\\run_001\\input_h18",
+  "ora": 18,
+  "pressure_pa": 7500000.0,
+  "temperature_k": 288.15,
+  "junction_flow": 0.0001,
+  "max_iter": 80,
+  "tol": 0.01,
+  "urf": 1.0,
+  "autocal": false,
+  "refine": false,
+  "roughness_m": 1.2e-05,
+  "placeholder_flow": 1e-06,
+  "gas_comp": "{\"methane\": 0.748113, \"ethane\": 0.074554, \"propane\": 0.010011, \"isobutane\": 0.00062, \"butane\": 0.000964, \"isopentane\": 0.000164, \"pentane\": 0.000164, \"hexane\": 0.000121, \"nitrogen\": 0.011483, \"carbon dioxide\": 0.014393, \"helium\": 0.000215, \"hydrogen\": 0.1392}",
+  "use_subprocess": true,
+  "result_decimals": 4,
+  "result_nodes_color": "pressure_bar",
+  "result_nodes_size": null,
+  "result_nodes_fields": [
+    "pressure_bar",
+    "volumetric_flow_sm3s",
+    "energy_flow_mw",
+    "temperature_k",
+    "sp_gravity",
+    "z_factor",
+    "hhv_mj_sm3",
+    "wobbe_mj_sm3",
+    "h2_pct",
+    "gas_comp",
+    "throughput_sm3h"
+  ],
+  "result_pipes_color": "flow_abs_sm3h",
+  "result_pipes_fields": [
+    "flow_sm3h",
+    "flow_abs_sm3h",
+    "velocity_m_s",
+    "avg_pressure_bar",
+    "sp_gravity"
+  ],
+  "flow_arrows": false,
+  "is_batch": true
+}

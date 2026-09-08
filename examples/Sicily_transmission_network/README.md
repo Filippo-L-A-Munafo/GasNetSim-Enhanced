@@ -157,6 +157,30 @@ python run_sicily_simulation.py
 python run_sicily_simulation.py --winter-peak
 ```
 
+### Command-Line Arguments and Options
+
+The runner script supports flexible flags to simulate any of the 19 representative days or hours:
+
+```bash
+# 1. Run the default baseline benchmark (15 Nov 2025, h12)
+python examples/Sicily_transmission_network/run_sicily_simulation.py
+
+# 2. Run the extreme winter peak snapshot (08 Jan 2026, h18)
+python examples/Sicily_transmission_network/run_sicily_simulation.py --winter
+
+# 3. List all 19 available representative day datasets
+python examples/Sicily_transmission_network/run_sicily_simulation.py --list-days
+
+# 4. Simulate a specific day and hour (e.g. 15 Aug 2025, hour 20 CCGT duck-curve peak)
+python examples/Sicily_transmission_network/run_sicily_simulation.py --day 20250815 --hour 20
+
+# 5. Simulate all 24 hours of a specific day in sequence
+python examples/Sicily_transmission_network/run_sicily_simulation.py --day 20260108
+
+# 6. Simulate any custom folder path
+python examples/Sicily_transmission_network/run_sicily_simulation.py --folder path/to/input_folder
+```
+
 ### What the Console Output Displays
 
 When you run the command, it outputs a clean, structured text report directly to stdout:
@@ -213,10 +237,12 @@ The runner script automatically saves the full state solution into the `./result
 
 | File / Folder | Purpose |
 | :--- | :--- |
-| [`run_sicily_simulation.py`](run_sicily_simulation.py) | Standalone, headless Python runner script for terminal execution. |
-| [`sf_nodes.csv`](sf_nodes.csv) | 340-node table: coordinates, Copernicus DEM elevations, boundary pressures, and consumption flows. |
+| [`run_sicily_simulation.py`](run_sicily_simulation.py) | Standalone, headless Python runner script with CLI flags (`--day`, `--hour`, `--winter`, `--list-days`). |
+| [`sf_nodes.csv`](sf_nodes.csv) | 340-node table: coordinates, Copernicus DEM elevations, boundary pressures, and consumption flows (Autumn reference h12). |
 | [`sf_pipelines.csv`](sf_pipelines.csv) | 350-pipeline table: internal diameters, topological lengths, roughness, and friction models. |
 | [`params.json`](params.json) | Simulation configuration: tolerances, max iterations, and 12-component Algerian gas blend with 13.92% H₂. |
 | [`winter_peak_0108_h18/`](winter_peak_0108_h18/) | Subfolder with the winter peak high-demand dataset (08 Jan 2026, h18) for stress-testing and limit-cycle analysis. |
+| [`all_19_days/`](all_19_days/) | **Complete annual campaign archive (19 representative days, 456 hourly snapshots)** covering all 12 monthly archetypes and the full winter peak week. |
 | [`results/`](results/) | Output directory containing generated `results_nodes.csv` and `results_pipelines.csv`. |
 | `README.md` | This technical documentation and user guide. |
+

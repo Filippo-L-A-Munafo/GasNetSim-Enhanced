@@ -142,8 +142,87 @@ def run_simulation(network_folder: Path = None):
     print("=" * 76)
 
 if __name__ == "__main__":
+    import argparse
     current = Path(__file__).resolve().parent
-    if len(sys.argv) > 1 and sys.argv[1] in ("--winter", "--winter-peak", "-w"):
+    
+    parser = argparse.ArgumentParser(
+        description="Headless runner for the Sicilian Transmission Network simulation under 13.92 vol% H2 blend."
+    )
+    parser.add_argument(
+        "--winter", "--winter-peak", "-w",
+        action="store_true",
+        help="Simulate the extreme winter peak snapshot (08 Jan 2026, hour 18)."
+    )
+    parser.add_argument(
+        "--day", "-d",
+        type=str,
+        default=None,
+        help="Day string (e.g. '20260108', '20251115', '20250815')."
+    )
+    parser.add_argument(
+        "--hour", "-H",
+        type=int,
+        default=None,
+        help="Hour integer (0 to 23). If omitted when --day is specified, simulates all 24 hours of the day."
+    )
+    parser.add_argument(
+        "--folder", "-f",
+        type=str,
+        default=None,
+        help="Custom folder path containing sf_nodes.csv, sf_pipelines.csv, and params.json."
+    )
+    parser.add_argument(
+        "--list-days", "-l",
+        action="store_true",
+        help="List all 19 available representative day datasets."
+    )
+    
+    args = parser.parse_args()
+    
+    days_dir = current / "all_19_days"
+    
+    if args.list_days:
+        if days_dir.exists():
+            print("Available representative days in 'all_19_days/':")
+            for d in sorted(days_dir.iterdir()):
+                if d.is_dir():
+                    hours = len(list(d.glob("input_h*")))
+                    print(f"  • {d.name} ({hours} hourly snapshots)")
+        else:
+            print("Directory 'all_19_days/' not found.")
+        sys.exit(0)
+        
+    if args.winter:
         run_simulation(current / "winter_peak_0108_h18")
+    elif args.folder:
+        target = Path(args.folder)
+        if not target.is_absolute():
+            target = current / target
+        run_simulation(target)
+    elif args.day:
+        target_day = days_dir / args.day
+        if not target_day.exists():
+            # Try fuzzy match
+            matches = list(days_dir.glob(f"*{args.day}*"))
+            if matches:
+                target_day = matches[0]
+            else:
+                print(f"Error: Day '{args.day}' not found in {days_dir}")
+                sys.exit(1)
+                
+        if args.hour is not None:
+            target_h = target_day / f"input_h{args.hour:02d}"
+            if not target_h.exists():
+                print(f"Error: Hour {args.hour:02d} not found in {target_day}")
+                sys.exit(1)
+            run_simulation(target_h)
+        else:
+            print(f"Running full 24-hour sequence for day {target_day.name}...")
+            hours = sorted([h for h in target_day.iterdir() if h.is_dir() and h.name.startswith("input_h")])
+            for h in hours:
+                print(f"\n>>> Simulating snapshot {h.name}...")
+                run_simulation(h)
     else:
+        # Default benchmark case: Autumn reference (15 Nov 2025 h12)
         run_simulation(current)
+
