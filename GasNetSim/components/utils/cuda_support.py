@@ -25,12 +25,12 @@ import scipy.sparse.linalg as splinalg
 def create_matrix_of_zeros(size, use_cuda=False, sparse_matrix=False):
     if use_cuda:
         if sparse_matrix:
-            return cp.sparse.csr_matrix(shape=(size, size))
+            return cp.sparse.csr_matrix((size, size))
         else:
             return cp.zeros(shape=(size, size))
     else:
         if sparse_matrix:
-            return scipy.sparse.csr_matrix(shape=(size, size))
+            return scipy.sparse.csr_matrix((size, size))
         else:
             return numpy.zeros(shape=(size, size))
 
